@@ -1,0 +1,139 @@
+import os
+import sys
+import ipywidgets as widgets
+from IPython.display import display
+from threading import Thread
+import glob
+import re
+
+try:
+    import whisper
+except ImportError:
+    print("La biblioteca whisper no está instalada. Instálala con: !pip install whisper")
+    sys.exit(1)
+
+def check_ffmpeg():
+    import subprocess
+    try:
+        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def post_process_text(text):
+    # Corregir errores comunes
+    corrections = {
+        "operaciones agráfico hechos": "operaciones a gráfico hechos",
+        "viene a dejar una captura": "voy a dejar una captura",
+        "compartí justamente a Yeri": "compartí justamente ayer",
+        "en impulsos y los procesos": "en impulsos y retrocesos",
+    }
+    for error, correction in corrections.items():
+        text = text.replace(error, correction)
+
+    # Mejorar gramática
+    text = re.sub(r'\b(a el)\b', 'al', text)
+    text = re.sub(r'\b(de el)\b', 'del', text)
+
+    # Capitalizar la primera letra de cada oración
+    text = '. '.join(sentence.capitalize() for sentence in text.split('. '))
+
+    return text
+
+def transcribe_audio(audio_path, output_path, model, progress_bar):
+    try:
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"El archivo de audio no existe: {audio_path}")
+
+        # Transcribir el audio completo
+        result = model.transcribe(audio_path, language="es")
+
+        # Post-procesar el texto
+        processed_text = post_process_text(result["text"])
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(f"Idioma detectado: {result['language']}\n\n")
+            f.write(processed_text)
+
+        progress_bar.value += 1
+        print(f"Transcripción mejorada guardada en {output_path}")
+    except Exception as e:
+        print(f"Error al procesar {audio_path}: {e}")
+        progress_bar.value += 1
+
+def process_files(input_dir, output_dir, progress_bar):
+    # Usar un modelo más preciso
+    model = whisper.load_model("medium")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    mp3_files = glob.glob(os.path.join(input_dir, "*.mp3"))
+    progress_bar.max = len(mp3_files)
+
+    for input_path in mp3_files:
+        filename = os.path.basename(input_path)
+        output_path = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.txt")
+        print(f"Procesando: {filename}")
+        transcribe_audio(input_path, output_path, model, progress_bar)
+
+    print("Proceso completado")
+
+# Widgets para la interfaz de usuario
+input_dir_input = widgets.Text(
+    value='',
+    placeholder='Ingrese la ruta del directorio de entrada',
+    description='Directorio de entrada:',
+    disabled=False
+)
+
+output_dir_input = widgets.Text(
+    value='',
+    placeholder='Ingrese la ruta del directorio de salida',
+    description='Directorio de salida:',
+    disabled=False
+)
+
+start_button = widgets.Button(description="Iniciar procesamiento")
+output = widgets.Output()
+progress_bar = widgets.IntProgress(
+    value=0,
+    min=0,
+    max=100,
+    description='Progreso:',
+    bar_style='info',
+    orientation='horizontal'
+)
+
+def on_start_button_clicked(b):
+    with output:
+        output.clear_output()
+        if not check_ffmpeg():
+            print("Error: ffmpeg no está instalado o no se encuentra en el PATH del sistema.")
+            print("Por favor, instale ffmpeg y asegúrese de que esté en el PATH del sistema.")
+            return
+
+        input_dir = input_dir_input.value
+        output_dir = output_dir_input.value
+
+        if not input_dir or not os.path.isdir(input_dir):
+            print("Por favor, ingrese un directorio de entrada válido.")
+            return
+
+        if not output_dir:
+            print("Por favor, ingrese un directorio de salida válido.")
+            return
+
+        mp3_files = glob.glob(os.path.join(input_dir, "*.mp3"))
+        if not mp3_files:
+            print(f"No se encontraron archivos MP3 en el directorio de entrada: {input_dir}")
+            return
+
+        progress_bar.value = 0
+        print(f"Se encontraron {len(mp3_files)} archivos MP3. Iniciando procesamiento...")
+        thread = Thread(target=process_files, args=(input_dir, output_dir, progress_bar))
+        thread.start()
+
+start_button.on_click(on_start_button_clicked)
+
+# Mostrar la interfaz
+display(input_dir_input, output_dir_input, start_button, progress_bar, output)
